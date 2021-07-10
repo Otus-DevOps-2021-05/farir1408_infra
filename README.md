@@ -406,6 +406,7 @@ puma -d
 
 #### Построить bake-образ
 
+Содержимое файла immutable.json
 ```json
 {
     "builders": [
