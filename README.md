@@ -286,7 +286,7 @@ yc iam key create --service-account-id $ACCT_ID --output <вставьте св�
     "builders": [
         {
             "type": "yandex",
-            "service_account_key_file": "/some-path/packer_key.json",
+            "service_account_key_file": "key.json.example",
             "folder_id": "some-folder-id",
 	        "zone": "ru-central1-a",
 	        "subnet_id": "some-subnet-id",
@@ -364,7 +364,7 @@ puma -d
 * Создать файл с переменными variables.json
 ```json
 {
-    "account_key_path": "/some-path/packer_key.json",
+    "account_key_path": "key.json.example",
     "folder_id": "some-folder-id",
     "image": "ubuntu-1604-lts",
     "subnet_id": "some-subnet-id"

@@ -1,5 +1,5 @@
 {
-    "account_key_path": "/some-path/yc_accounts/packer_key.json",
+    "account_key_path": "key.json.example",
     "folder_id": "some-folder-id",
     "image": "ubuntu-1604-lts",
     "subnet_id": "some-subnet-id"
