@@ -2,7 +2,7 @@
 farir1408 Infra repository
 
 ## HW-03 (Lecture 5)
-### branch: `cloud-bastion`
+#### branch: `cloud-bastion`
 - [X] Подключиться к bastion.
 - [X] Подключиться к someinternalhost в одну команду.
 - [X] Дополнительное задание: подключиться к someinternalhost с помощью команды `ssh someinternalhost`
@@ -231,6 +231,227 @@ yc compute instance create \
   --network-interface subnet-name=default-ru-central1-a,nat-ip-version=ipv4 \
   --metadata serial-port-enable=1 \
   --metadata-from-file user-data=metadata.yaml
+```
+
+</details>
+
+## HW-05 (Lecture 7)
+#### branch: `packer-base`
+- [X] Установить packer.
+- [X] Создать пользовательский образ с установленными зависимостями.
+- [X] Запустить виртуальную машину из созданного образа и установить reddit app.
+- [X] Параметризовать build файл packer.
+- [X] Дополнительное задание: Построить bake-образ
+- [ ] Дополнительное задание: Автоматизировать создание VM
+
+<details><summary>Решение</summary>
+
+#### Установить packer
+
+* Установить [packer](https://www.packer.io/downloads)
+```editorconfig
+packer -v
+1.7.3
+```
+
+* Получить folder-id с помощью команды: `yc config list`
+
+* Создать сервисный аккаунт
+```editorconfig
+SVC_ACCT="<придумайте имя>"
+FOLDER_ID="<замените на собственный>"
+yc iam service-account create --name $SVC_ACCT --folder-id $FOLDER_ID
+```
+
+* Выдать права сервисному аккаунту
+```editorconfig
+ACCT_ID=$(yc iam service-account get $SVC_ACCT | \
+    grep ^id | \
+    awk '{print $2}')
+yc resource-manager folder add-access-binding --id $FOLDER_ID \
+    --role editor \
+    --service-account-id $ACCT_ID
+```
+
+* Создать key file для сервисного аккаунта
+```editorconfig
+yc iam key create --service-account-id $ACCT_ID --output <вставьте свой путь>/key.json
+```
+
+#### Создать пользовательский образ с установленными зависимостями
+
+* Создать build файл для packer
+```json
+{
+    "builders": [
+        {
+            "type": "yandex",
+            "service_account_key_file": "key.json.example",
+            "folder_id": "some-folder-id",
+	        "zone": "ru-central1-a",
+	        "subnet_id": "some-subnet-id",
+	        "use_ipv4_nat": true,
+            "source_image_family": "ubuntu-1604-lts",
+            "image_name": "reddit-base-{{timestamp}}",
+            "image_family": "reddit-base",
+            "ssh_username": "ubuntu",
+            "platform_id": "standard-v1"
+        }
+    ],
+    "provisioners": [
+        {
+            "type": "shell",
+            "script": "scripts/install_ruby.sh",
+            "execute_command": "sudo {{.Path}}"
+        },
+        {
+            "type": "shell",
+            "script": "scripts/install_mongodb.sh",
+            "execute_command": "sudo {{.Path}}"
+        }
+    ]
+}
+```
+
+* Выполнить проверку синтаксиса
+```editorconfig
+packer validate ./ubuntu.json
+```
+
+* Собрать образ с помощью packer
+```editorconfig
+packer build ./ubuntu.json
+```
+
+#### Запустить виртуальную машину из созданного образа и установить reddit app
+
+* Получить id созданного образа:
+```editorconfig
+yc compute image list
++----------------------+------------------------+-------------+----------------------+--------+
+|          ID          |          NAME          |   FAMILY    |     PRODUCT IDS      | STATUS |
++----------------------+------------------------+-------------+----------------------+--------+
+| fd8jdb89uu7ord4urmvb | reddit-base-1625578780 | reddit-base | f2el9g14ih63bjul3ed3 | READY  |
++----------------------+------------------------+-------------+----------------------+--------+
+```
+
+* Создать VM из образа:
+```editorconfig
+yc compute instance create \
+  --name reddit-packer-app \
+  --hostname reddit-packer-app \
+  --memory=4 \
+  --create-boot-disk image-id=fd8jdb89uu7ord4urmvb,size=10GB \
+  --network-interface subnet-name=default-ru-central1-a,nat-ip-version=ipv4 \
+  --metadata serial-port-enable=1 \
+  --ssh-key ~/.ssh/otus_devops.pub
+```
+
+* Запустить reddit app, выполнить следующие команды в консоли VM
+```editorconfig
+sudo apt-get update
+sudo apt-get install -y git
+git clone -b monolith https://github.com/express42/reddit.git
+cd reddit && bundle install
+puma -d
+```
+
+* Проверить запущенное приложение в браузере
+`http://vm-publick-ip:9292/`
+
+#### Параметризовать build файл packer
+
+* Создать файл с переменными variables.json
+```json
+{
+    "account_key_path": "key.json.example",
+    "folder_id": "some-folder-id",
+    "image": "ubuntu-1604-lts",
+    "subnet_id": "some-subnet-id"
+}
+```
+
+* Добавить переменные в packer build файл
+```json
+{
+    "builders": [
+        {
+            "type": "yandex",
+            "service_account_key_file": "{{user `account_key_path`}}",
+            "folder_id": "{{user `folder_id`}}",
+	        "zone": "ru-central1-a",
+	        "subnet_id": "{{user `subnet_id`}}",
+	        "use_ipv4_nat": true,
+            "source_image_family": "{{user `image`}}",
+            "image_name": "reddit-base-{{timestamp}}",
+            "image_family": "reddit-base",
+            "ssh_username": "ubuntu",
+            "platform_id": "standard-v1"
+        }
+    ],
+    "provisioners": [
+        {
+            "type": "shell",
+            "script": "scripts/install_ruby.sh",
+            "execute_command": "sudo {{.Path}}"
+        },
+        {
+            "type": "shell",
+            "script": "scripts/install_mongodb.sh",
+            "execute_command": "sudo {{.Path}}"
+        }
+    ]
+}
+```
+
+#### Построить bake-образ
+
+Содержимое файла immutable.json
+```json
+{
+    "builders": [
+        {
+            "type": "yandex",
+            "service_account_key_file": "{{user `account_key_path`}}",
+            "folder_id": "{{user `folder_id`}}",
+	        "zone": "ru-central1-a",
+	        "subnet_id": "{{user `subnet_id`}}",
+	        "use_ipv4_nat": true,
+            "source_image_family": "{{user `image`}}",
+            "image_name": "reddit-full-{{timestamp}}",
+            "image_family": "reddit-full",
+            "ssh_username": "ubuntu",
+            "platform_id": "standard-v1"
+        }
+    ],
+    "provisioners": [
+        {
+            "type": "shell",
+            "script": "scripts/install_ruby.sh",
+            "execute_command": "sudo {{.Path}}"
+        },
+        {
+            "type": "shell",
+            "script": "scripts/install_mongodb.sh",
+            "execute_command": "sudo {{.Path}}"
+        },
+        {
+            "type": "file",
+            "source": "files/reddit.service",
+            "destination": "/tmp/reddit.service"
+        },
+        {
+            "type": "shell",
+            "inline": [
+                "sudo mv /tmp/reddit.service /etc/systemd/system/reddit.service",
+                "sudo apt-get install -y git",
+                "git clone -b monolith https://github.com/express42/reddit.git",
+                "cd reddit && bundle install",
+                "sudo systemctl daemon-reload && sudo systemctl start reddit && sudo systemctl enable reddit"
+            ]
+        }
+    ]
+}
 ```
 
 </details>

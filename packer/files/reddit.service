@@ -1,0 +1,16 @@
+[Unit]
+Description=RedditApp
+After=network.target
+After=mongod.service
+Requires=mongod.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/reddit
+PIDFile=/work/reddit/tmp/pids/service.pid
+
+ExecStart=/usr/local/bin/puma
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
