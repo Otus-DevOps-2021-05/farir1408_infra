@@ -455,3 +455,399 @@ puma -d
 ```
 
 </details>
+
+## HW-06 (Lecture 8)
+#### branch: `terraform-1`
+- [X] Установить terraform.
+- [X] Создать VM из исходного образа.
+- [X] Автоматически запускать приложение в новой VM.
+- [X] Параметризация конфиг файла.
+- [X] Доп. задание: создать балансировщик нагрузки.
+- [X] Доп. задание: создать второй инстанс приложения.
+- [X] Доп. задание: использовать автоматическое масштабирование инстансов через count.
+
+<details><summary>Решение</summary>
+
+#### Установить terraform
+* Установить [terraform](https://www.terraform.io/) используя [инструкцию](https://learn.hashicorp.com/tutorials/terraform/install-cli?in=terraform/aws-get-started#install-terraform):
+```editorconfig
+terraform -v
+Terraform v1.0.2
+```
+
+#### Создать VM из исходного образа.
+
+* Создать сервисный аккаунт для terraform.
+
+* Определить provider
+```terraform
+terraform {
+  required_providers {
+    yandex = {
+      source = "yandex-cloud/yandex"
+    }
+  }
+}
+
+provider "yandex" {
+  service_account_key_file = "/key.json"
+  cloud_id                 = "cloud_id"
+  folder_id                = "folder_id"
+  zone                     = "zone"
+}
+```
+
+Для получения `cloud_id`, `folder_id` использовать команду: `yc config list`
+
+* Загрузить модуль провайдера:
+```editorconfig
+terraform init
+```
+В результате будет скачать провайдер yandex. Вывод команды `terraform -v` станет таким:
+```editorconfig
+Terraform v1.0.2
+on darwin_amd64
++ provider registry.terraform.io/yandex-cloud/yandex v0.61.0
+```
+
+* Добавить ресурсы для VM
+```terraform
+resource "yandex_compute_instance" "app" {
+  name = "reddit-app-${count.index}"
+
+  boot_disk {
+    initialize_params {
+      # Указать id образа созданного в предыдущем домашнем задании
+      image_id = "image"
+    }
+  }
+  network_interface {
+    subnet_id = "subnet"
+    nat       = true
+  }
+  resources {
+    cores  = 2
+    memory = 2
+  }
+}
+```
+Чтобы увидеть план изменений использовать команду: `terraform plan`. Знак "+" перед наименованием ресурса означает, что ресурс
+будет добавлен. Далее приведены атрибуты этого ресурса. `known after apply` означает,
+что данные атрибуты еще не известны terraform'у и их значения будут получены во время создания ресурса.
+
+Для применения изменений использовать команду `terraform apply -auto-approve`. Результатом выполнения команды также будет создание файла terraform.tfstate в директории terraform.
+Terraform хранит в этом файле состояние управляемых им ресурсов. Загляните в этот файл и найдите внешний IP адрес
+созданного инстанса.
+
+* Узнать публичный адрес созданной виртуальной машины
+
+Команда `terraform show` отображает текущее состояние ресурсов в облаке. `terraform show | grep nat_ip_address` выведет публичный ip адрес созданной VM.
+Однако такой способ усложняется когда в облаке много VM.
+
+Для получения таких значений лучше использовать output. В файле outputs.tf прописать следующее содержимое:
+```terraform
+output "external_ip_address_app" {
+  value = yandex_compute_instance.app.network_interface.0.nat_ip_address
+}
+```
+Используем команду `terraform refresh` для того, чтобы переменные проинициализировалсь
+Теперь команда `terraform output` выведет список переменных объявленных в этом файле.
+
+* Подключение к VM по ssh
+
+Для подключения необходимо в VM добавить публичный ключ. В блоке описания ресурса добавить:
+```terraform
+metadata = {
+  ssh-keys = "ubuntu:${file("~/.ssh/otus_devops.pub")}"
+}
+```
+
+#### Автоматически запускать приложение в новой VM
+
+Provisioners в terraform вызываются в момент создания/удаления ресурса и позволяют выполнять команды на удаленной
+или локальной машине. Их используют для запуска инструментов управления конфигурацией или начальной настройки системы.
+
+* Определить провиженеры в ресурсе
+```terraform
+provisioner "file" {
+  source      = "files/puma.service"
+  destination = "/tmp/puma.service"
+}
+provisioner "remote-exec" {
+  script = "files/deploy.sh"
+}
+```
+`file` необходим для копирования Unit файла сервиса. `remote-exec` запускает скрипт установки приложения.
+
+* Определить параметры для подключения провиженеров к VM.
+```terraform
+connection {
+  type  = "ssh"
+  host  = yandex_compute_instance.app.network_interface.0.nat_ip_address
+  user  = "ubuntu"
+  agent = false
+  # путь до приватного ключа
+  private_key = file("~/.ssh/otus_devops")
+}
+```
+
+После изменений конфига необходимо пересоздать ресурс. Можно воспользоваться командой `taint` чтобы пометить ресурс, который необходимо пересоздать.
+```editorconfig
+terraform taint yandex_compute_instance.app
+terraform plan
+terraform apply
+```
+
+Теперь в браузере по адресу `http://external_ip_address_app:9292/` будет доступна стартовая страница приложения.
+
+#### Использовать переменные для параметризации конфиг файла.
+
+* Создать файл с описанием переменных `variables.tf`
+```terraform
+variable "cloud_id" {
+  description = "Cloud"
+}
+variable "folder_id" {
+  description = "Folder"
+}
+variable "zone" {
+  description = "Zone"
+  default     = "ru-central1-a"
+}
+variable "public_key_path" {
+  description = "Path to the public key used for ssh access"
+}
+variable "private_key_path" {
+  description = "Path to the private key used for ssh access"
+}
+variable "image_id" {
+  description = "Image"
+}
+variable "subnet_id" {
+  description = "Subnet"
+}
+variable "account_key_path" {
+  description = "Path to the service account key file used for cloud access"
+}
+```
+
+* Создать файл со значениями переменных `terraform.tfvars`
+```terraform
+cloud_id         = "cloud_id"
+folder_id        = "folder_id"
+public_key_path  = "~/.ssh/otus_devops.pub"
+private_key_path = "~/.ssh/otus_devops"
+image_id         = "image"
+subnet_id        = "subnet"
+account_key_path = "terraform_key.json"
+```
+
+* Использовать переменные в конфигурационном файле
+
+Пример на основе описания провайдера
+```terraform
+provider "yandex" {
+  service_account_key_file = var.account_key_path
+  cloud_id                 = var.cloud_id
+  folder_id                = var.folder_id
+  zone                     = var.zone
+}
+```
+
+#### Доп. задание: создать балансировщик нагрузки.
+
+Подробнее про балансировщик нагрузки в yandex облаке [тут](https://cloud.yandex.ru/docs/network-load-balancer/concepts/)
+
+* Создать конфигурационный файл для балансировщика `lb.tf`
+
+* Создать целевую группу
+```terraform
+resource "yandex_lb_target_group" "reddit_app_target_group" {
+  name = "reddit-app-group"
+  folder_id = var.folder_id
+  region_id = "ru-central1"
+
+  target {
+    subnet_id = var.subnet_id
+    address = yandex_compute_instance.app.network_interface.0.ip_address
+  }
+}
+```
+
+* Создать ресурс балансировщик
+```terraform
+resource "yandex_lb_network_load_balancer" "reddit_lb" {
+  name = "reddit-app-lb"
+  folder_id = var.folder_id
+
+  listener {
+    name = "reddit-listener"
+    port = 80
+    target_port = 9292
+    external_address_spec {
+      ip_version = "ipv4"
+    }
+  }
+
+  attached_target_group {
+    target_group_id = yandex_lb_target_group.reddit_app_target_group.id
+
+    healthcheck {
+      name = "tcp"
+      tcp_options {
+        port = 9292
+      }
+    }
+  }
+}
+```
+
+* Добавить адрес балансировщик в outputs
+```terraform
+output "external_id_address_load_balancer" {
+  value = yandex_lb_network_load_balancer.reddit_lb.listener.*.external_address_spec[0].*.address
+}
+```
+
+После создания новых ресурсов приложением будет доступно по адресу `http://external_id_address_load_balancer/`
+однако при недоступности инстанса `reddit-app`, приложением не будет функционировать.
+
+#### Доп. задание: создать второй инстанс приложения
+
+* Создать второй инстанс приложения
+```terraform
+resource "yandex_compute_instance" "app2" {
+  name = "reddit-app2"
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+  }
+
+  boot_disk {
+    initialize_params {
+      # Указать id образа созданного в предыдущем домашнем задании
+      image_id = var.image_id
+    }
+  }
+  network_interface {
+    subnet_id = var.subnet_id
+    nat       = true
+  }
+  resources {
+    cores  = 2
+    memory = 2
+  }
+
+  connection {
+    type  = "ssh"
+    host  = yandex_compute_instance.app2.network_interface.0.nat_ip_address
+    user  = "ubuntu"
+    agent = false
+    # путь до приватного ключа
+    private_key = file(var.private_key_path)
+  }
+
+  provisioner "file" {
+    source      = "files/puma.service"
+    destination = "/tmp/puma.service"
+  }
+  provisioner "remote-exec" {
+    script = "files/deploy.sh"
+  }
+}
+```
+
+* Добавить инстанс в группу балансировщика
+```terraform
+target {
+  subnet_id = var.subnet_id
+  address = yandex_compute_instance.app2.network_interface.0.ip_address
+}
+```
+
+После создания новых ресурсов приложением будет доступно по адресу `http://external_id_address_load_balancer/`
+При недоступности инстанса с приложением `reddit-app` запросы будут обрабатываться вторым инстансом `reddit-app2`
+
+Плюсы данного решения:
+* Отказоустойчивость, если недоступен один из инстансов, приложение продолжает работать
+
+Минусы анного решения:
+* Дублирование кода для создания нового инстанса
+* БД (mongodb) не масштабируется, у каждого приложения своя копия бд.
+
+#### Доп. задание: использовать автоматическое масштабирование инстансов через count
+
+* Автоматически масштабировать количество инстансов приложения используя `count`
+```terraform
+resource "yandex_compute_instance" "app" {
+  name = "reddit-app-${count.index}"
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+  }
+  count = 2
+
+  boot_disk {
+    initialize_params {
+      # Указать id образа созданного в предыдущем домашнем задании
+      image_id = var.image_id
+    }
+  }
+  network_interface {
+    subnet_id = var.subnet_id
+    nat       = true
+  }
+  resources {
+    cores  = 2
+    memory = 2
+  }
+
+  connection {
+    type  = "ssh"
+    host  = self.network_interface.0.nat_ip_address
+    user  = "ubuntu"
+    agent = false
+    # путь до приватного ключа
+    private_key = file(var.private_key_path)
+  }
+
+  provisioner "file" {
+    source      = "files/puma.service"
+    destination = "/tmp/puma.service"
+  }
+  provisioner "remote-exec" {
+    script = "files/deploy.sh"
+  }
+}
+```
+
+* Автоматически добавлять инстансы в группу
+```terraform
+resource "yandex_lb_target_group" "reddit_app_target_group" {
+  name = "reddit-app-group"
+  folder_id = var.folder_id
+  region_id = "ru-central1"
+
+  dynamic "target" {
+    for_each = yandex_compute_instance.app.*.network_interface.0.ip_address
+    content {
+      subnet_id = var.subnet_id
+      address = target.value
+    }
+  }
+}
+```
+
+* В outputs выводить адреса всех созданных инстансов
+```terraform
+output "external_ip_address_app" {
+  value = yandex_compute_instance.app[*].network_interface.0.nat_ip_address
+}
+```
+
+Плюсы данного решения:
+* Отказоустойчивость, если недоступен один из инстансов, приложение продолжает работать
+* Автоматическое масштабирование, создание копий инстансов по шаблону
+
+Минусы анного решения:
+* БД (mongodb) не масштабируется, у каждого приложения своя копия бд.
+
+</details>
