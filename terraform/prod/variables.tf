@@ -23,3 +23,11 @@ variable "subnet_id" {
 variable "account_key_path" {
   description = "Path to the service account key file used for cloud access"
 }
+variable "app_disc_image" {
+  description = "Disk image for reddit app"
+  default     = "reddit-app-base"
+}
+variable "db_disc_image" {
+  description = "Disk image for reddit db"
+  default     = "mongodb-base"
+}

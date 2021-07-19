@@ -1,0 +1,7 @@
+cloud_id         = "cloud"
+folder_id        = "folder"
+public_key_path  = "~/.ssh/otus_devops.pub"
+private_key_path = "~/.ssh/otus_devops"
+image_id         = "image"
+subnet_id        = "subnet"
+account_key_path = "key.json"

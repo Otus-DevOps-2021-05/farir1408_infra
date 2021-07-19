@@ -1,0 +1,24 @@
+{
+  "builders": [
+    {
+      "type": "yandex",
+      "service_account_key_file": "{{user `account_key_path`}}",
+      "folder_id": "{{user `folder_id`}}",
+      "zone": "ru-central1-a",
+      "subnet_id": "{{user `subnet_id`}}",
+      "use_ipv4_nat": true,
+      "source_image_family": "{{user `image`}}",
+      "image_name": "mongodb-base-{{timestamp}}",
+      "image_family": "mongodb-base",
+      "ssh_username": "ubuntu",
+      "platform_id": "standard-v1"
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "script": "scripts/install_mongodb.sh",
+      "execute_command": "sudo {{.Path}}"
+    }
+  ]
+}
