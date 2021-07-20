@@ -28,3 +28,10 @@ module "db" {
   db_disc_image   = var.db_disc_image
   subnet_id       = var.subnet_id
 }
+
+resource "yandex_storage_bucket" "terraform" {
+  access_key = "access-key"
+  secret_key = "secret-key"
+  bucket = "terraform-hw"
+  force_destroy = true
+}

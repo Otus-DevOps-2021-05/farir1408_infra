@@ -859,7 +859,7 @@ output "external_ip_address_app" {
 - [X] Структуризировать ресурсы.
 - [X] Разбить конфигурацию на модули.
 - [X] Создать prod и stage конфигурации.
-- [ ] Доп. задание: настроить хранение стейт на удалённом бекенде.
+- [X] Доп. задание: настроить хранение стейт на удалённом бекенде.
 - [ ] Доп. задание: настроить запуск приложения при инициализации инстансов.
 
 <details><summary>Решение</summary>
@@ -1159,5 +1159,57 @@ module "db" {
   subnet_id = var.subnet_id
 }
 ```
+
+#### Доп. задание: настроить хранение стейт на удалённом бекенде.
+
+Состояние Terraform описывает текущую развернутую инфраструктуру и хранится в файлах с расширением .tfstate.
+Файл состояния создается после развертывания инфраструктуры и может быть сразу загружен в Object Storage.
+Загруженный файл состояния будет обновляться после изменений созданной инфраструктуры.
+
+* Создать [статические ключи доступа](https://cloud.yandex.ru/docs/iam/concepts/authorization/access-key) совместимые с AWS API
+
+По [инструкции](https://cloud.yandex.ru/docs/iam/operations/sa/create-access-key)
+создать статические ключи доступа. В результате key_id нужно поместить в access_key, а secret в secret_key.
+```editorconfig
+access_key:
+  id: some-id
+  service_account_id: some-account-id
+  created_at: "2021-07-19T20:33:42.790725131Z"
+  key_id: acces-key-id
+secret: secret-key-id
+```
+
+* Создать backet для хранения .tfstate
+
+Создать ресурс `yandex_storage_bucket` и применить изменения `terraform apply`
+```terraform
+resource "yandex_storage_bucket" "terraform" {
+  access_key = "access-key"
+  secret_key = "secret-key"
+  bucket = "terraform-hw"
+}
+```
+
+Либо создать его используя web-интерфейс yandex cloud.
+
+* Создать файл backend.tf с описанием бэкенда для хранения .tfstate
+
+```terraform
+terraform {
+  backend "s3" {
+    endpoint   = "storage.yandexcloud.net"
+    bucket     = "terraform-hw"
+    region     = "ru-central1"
+    key        = "prod/terraform.tfstate"
+    access_key = "access-key"
+    secret_key = "secret-key"
+
+    skip_region_validation      = true
+    skip_credentials_validation = true
+  }
+}
+```
+
+
 
 </details>
