@@ -851,3 +851,365 @@ output "external_ip_address_app" {
 * БД (mongodb) не масштабируется, у каждого приложения своя копия бд.
 
 </details>
+
+
+## HW-07 (Lecture 9)
+#### branch: `terraform-2`
+- [X] Создать сеть и подсеть.
+- [X] Структуризировать ресурсы.
+- [X] Разбить конфигурацию на модули.
+- [X] Создать prod и stage конфигурации.
+- [X] Доп. задание: настроить хранение стейт на удалённом бекенде.
+- [ ] Доп. задание: настроить запуск приложения при инициализации инстансов.
+
+<details><summary>Решение</summary>
+
+#### Создать сеть и подсеть
+
+* В файле `main.tf` описать 2 ресурса: сеть и подсеть
+```terraform
+resource "yandex_vpc_network" "app-network" {
+  name = "app-network"
+}
+
+resource "yandex_vpc_subnet" "app-subnet" {
+  name = "app-subnet"
+  zone = var.zone
+  network_id = yandex_vpc_network.app-network.id
+  v4_cidr_blocks = ["192.168.10.0/24"]
+}
+```
+
+После применения изменений будет созданы 3 ресурса, VM, сеть и подсеть. Сеть и подсеть будут созданы друг за другом
+так как присутствует зависимость на `app-network.id`. Чтобы сделать зависимость VM от ресурса подсеть
+необходимо явно указать это. Ссылку в одном ресурсе на атрибуты другого тераформ
+понимает как зависимость одного ресурса от другого. Это влияет
+на очередность создания и удаления ресурсов при применении
+изменений.
+
+```terraform
+...
+network_interface {
+  subnet_id = yandex_vpc_subnet.app-subnet.id
+  nat = true
+}
+...
+```
+
+#### Структуризировать ресурсы
+
+* Создать образы для приложения и бд
+
+Для создания 2х VM с приложением и базой данных, необходимо с помощью packer создать 2 новых образа.
+В образе с приложением должен быть установлен ruby, в образе с базой данных необходимо установить и запустить mongod.
+
+* Создать две VM
+
+app.tf
+```terraform
+resource "yandex_compute_instance" "app" {
+  name = "reddit-app"
+  labels = {
+    tags = "reddit-app"
+  }
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+  }
+
+  resources {
+    cores = 2
+    memory = 2
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = var.app_disk_image
+    }
+  }
+  network_interface {
+    subnet_id = yandex_vpc_subnet.app-subnet.id
+    nat = true
+  }
+}
+```
+
+db.tf
+```terraform
+resource "yandex_compute_instance" "db" {
+  name = "reddit-db"
+  labels = {
+    tags = "reddit-db"
+  }
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+  }
+
+  resources {
+    cores  = 2
+    memory = 2
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = var.db_disk_image
+    }
+  }
+
+  network_interface {
+    subnet_id = yandex_vpc_subnet.app-subnet.id
+    nat = true
+  }
+}
+```
+
+variables.tf
+```terraform
+...
+variable "app_disc_image" {
+  description = "Disk image for reddit app"
+  default = "reddit-app-base"
+}
+variable "db_disc_image" {
+  description = "Disk image for reddit db"
+  default = "mongodb-base"
+}
+...
+```
+
+* Создать конфигурацию для сети
+
+vpc.tf
+```terraform
+resource "yandex_vpc_network" "app-network" {
+  name = "app-network"
+}
+resource "yandex_vpc_subnet" "app-subnet" {
+  name = "app-subnet"
+  zone = "ru-central1-a"
+  network_id = yandex_vpc_network.app-network.id
+  v4_cidr_blocks = ["192.168.10.0/24"]
+}
+```
+
+* Отедактировать main и outputs
+
+main.tf
+```terraform
+provider "yandex" {
+  service_account_key_file = var.service_account_key_file
+  cloud_id = var.cloud_id
+  folder_id = var.folder_id
+  zone = var.zone
+}
+```
+
+outputs.tf
+```terraform
+output "external_ip_address_app" {
+  value = yandex_compute_instance.app.network_interface.0.nat_ip_address
+}
+output "external_ip_address_db" {
+  value = yandex_compute_instance.db.network_interface.0.nat_ip_address
+}
+```
+
+#### Разбить конфигурацию на модули
+
+* Создать модуль app
+
+Содержимое директории с модулем:
+```editorconfig
+modules/app
+├── docs.md
+├── main.tf
+├── outputs.tf
+└── variables.tf
+```
+
+Содержимое файла main.tf
+```terraform
+resource "yandex_compute_instance" "app" {
+  name = "reddit-app"
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+  }
+  labels = {
+    tags = "reddit-app"
+  }
+
+  resources {
+    cores  = 2
+    memory = 2
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = var.app_disc_image
+    }
+  }
+  network_interface {
+    subnet_id = var.subnet_id
+    nat       = true
+  }
+}
+```
+
+Содержимое файла variables.tf
+```terraform
+variable "app_disc_image" {
+  description = "Disk image for reddit app"
+  default = "reddit-app-base"
+}
+variable "public_key_path" {
+  description = "Path to the public key used for ssh access"
+}
+variable subnet_id {
+  description = "Subnets for modules"
+}
+```
+
+Содержимое файла outputs.tf
+```terraform
+output "external_ip_address_app" {
+  value = yandex_compute_instance.app.network_interface.0.nat_ip_address
+}
+```
+
+Для автоматической генерации документации использовать утилиту [terraform-docs](https://github.com/terraform-docs/terraform-docs)
+
+* Отредактировать файл main.tf
+
+Содержимое файла main.tf с использованием модулей
+```terraform
+provider "yandex" {
+  service_account_key_file = var.account_key_path
+  cloud_id                 = var.cloud_id
+  folder_id                = var.folder_id
+  zone                     = var.zone
+  version                  = 0.35
+}
+
+module "app" {
+  source = "./modules/app"
+  public_key_path = var.public_key_path
+  app_disc_image = var.app_disc_image
+  subnet_id = var.subnet_id
+}
+
+module "db" {
+  source = "./modules/db"
+  public_key_path = var.public_key_path
+  db_disc_image = var.db_disc_image
+  subnet_id = var.subnet_id
+}
+```
+
+Для начала работы с модулями их нужно загрузить из указанного источника с помощью команды: `terraform get`
+
+* Отредактировать файл outputs.tf для получения значений из модулей
+```terraform
+output "external_ip_address_app" {
+  value = module.app.external_ip_address_app
+}
+output "external_ip_address_db" {
+  value = module.db.external_ip_address_db
+}
+```
+
+Основную задачу, которую решают модули - это увеличивают
+переиспользуемость кода и помогают нам следовать принципу DRY.
+Инфраструктуру, которую мы описали в модулях, теперь можно
+использовать на разных стадиях нашего конвейера непрерывной
+поставки с необходимыми нам изменениями.
+
+#### Создать prod и stage конфигурации
+
+* Создать prod конфигурацию
+
+Содержимое директории prod
+```editorconfig
+prod
+├── main.tf
+├── outputs.tf
+├── terraform.tfvars
+└── variables.tf
+```
+
+* Отредактировать main.tf для использования модулей
+```terraform
+provider "yandex" {
+  service_account_key_file = var.account_key_path
+  cloud_id                 = var.cloud_id
+  folder_id                = var.folder_id
+  zone                     = var.zone
+  version                  = 0.35
+}
+
+module "app" {
+  source = "../modules/app"
+  public_key_path = var.public_key_path
+  app_disc_image = var.app_disc_image
+  subnet_id = var.subnet_id
+}
+
+module "db" {
+  source = "../modules/db"
+  public_key_path = var.public_key_path
+  db_disc_image = var.db_disc_image
+  subnet_id = var.subnet_id
+}
+```
+
+#### Доп. задание: настроить хранение стейт на удалённом бекенде.
+
+Состояние Terraform описывает текущую развернутую инфраструктуру и хранится в файлах с расширением .tfstate.
+Файл состояния создается после развертывания инфраструктуры и может быть сразу загружен в Object Storage.
+Загруженный файл состояния будет обновляться после изменений созданной инфраструктуры.
+
+* Создать [статические ключи доступа](https://cloud.yandex.ru/docs/iam/concepts/authorization/access-key) совместимые с AWS API
+
+По [инструкции](https://cloud.yandex.ru/docs/iam/operations/sa/create-access-key)
+создать статические ключи доступа. В результате key_id нужно поместить в access_key, а secret в secret_key.
+```editorconfig
+access_key:
+  id: some-id
+  service_account_id: some-account-id
+  created_at: "2021-07-19T20:33:42.790725131Z"
+  key_id: acces-key-id
+secret: secret-key-id
+```
+
+* Создать backet для хранения .tfstate
+
+Создать ресурс `yandex_storage_bucket` и применить изменения `terraform apply`
+```terraform
+resource "yandex_storage_bucket" "terraform" {
+  access_key = "access-key"
+  secret_key = "secret-key"
+  bucket = "terraform-hw"
+}
+```
+
+Либо создать его используя web-интерфейс yandex cloud.
+
+* Создать файл backend.tf с описанием бэкенда для хранения .tfstate
+
+```terraform
+terraform {
+  backend "s3" {
+    endpoint   = "storage.yandexcloud.net"
+    bucket     = "terraform-hw"
+    region     = "ru-central1"
+    key        = "prod/terraform.tfstate"
+    access_key = "access-key"
+    secret_key = "secret-key"
+
+    skip_region_validation      = true
+    skip_credentials_validation = true
+  }
+}
+```
+
+
+
+</details>
