@@ -15,6 +15,13 @@ provider "yandex" {
   version                  = 0.35
 }
 
+resource "yandex_storage_bucket" "terraform" {
+  access_key    = var.s3_access_key
+  secret_key    = var.s3_secret_key
+  bucket        = "terraform-hw"
+  force_destroy = true
+}
+
 module "app" {
   source          = "../modules/app"
   public_key_path = var.public_key_path
