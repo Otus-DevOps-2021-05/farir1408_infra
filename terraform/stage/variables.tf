@@ -31,3 +31,9 @@ variable "db_disc_image" {
   description = "Disk image for reddit db"
   default     = "mongodb-base"
 }
+variable "s3_access_key" {
+  description = "Object storage access key"
+}
+variable "s3_secret_key" {
+  description = "Object storage secret key"
+}

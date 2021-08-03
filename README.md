@@ -1210,6 +1210,235 @@ terraform {
 }
 ```
 
+</details>
 
+## HW-08 (Lecture 10)
+#### branch: `ansible-1`
+- [X] Установить ansible
+- [X] Ознакомиться с базовыми функциями и инвентори
+- [X] Написать простой плейбук
+- [ ] Доп. задание: настроить динамический инвентори
+
+<details><summary>Решение</summary>
+
+#### Установить ansible
+
+* Проверить, что установлен python, рекомендуемая версия 2.7
+```editorconfig
+python --version
+```
+
+* [Установить ansible](https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html) используя pip или easy_install
+```editorconfig
+$ ansible --version
+ansible [core 2.11.3]
+  config file = None
+  ...
+  python version = 3.9.6 (default, Jun 29 2021, 06:20:32) [Clang 12.0.0 (clang-1200.0.32.29)]
+  jinja version = 3.0.1
+  libyaml = True
+```
+
+#### Ознакомиться с базовыми функциями и инвентори
+
+Ansible управляет инстансами виртуальных машин (c Linux ОС) используя
+SSH-соединение. Поэтому для управление инстансом при помощи Ansible
+нам нужно убедиться, что есть возможность подключиться к нему по SSH.
+Для управления хостами при помощи Ansible на них также должен быть
+установлен Python >=2.7
+
+* Поднять инфраструктуру, описанную в terraform/stage директории
+
+* Создать inventory файл, с описанием инфраструктуры
+```ini
+appserver ansible_host=app_host_ip ansible_user=ubuntu \
+ ansible_private_key_file=~/.ssh/otus_devops
+```
+
+Убедимся, что ansible может управлять хостом
+```editorconfig
+ansible appserver -i ./inventory -m ping
+appserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+```
+
+Модуль `ping` позволяет протестировать соединение с хостом, как видно из результата применения команды на хсте ничего не было изменено.
+
+* Повторить те же действия для инстанса db
+
+* Создать конфигурационный файл для ansible
+
+```editorconfig
+[defaults]
+inventory = ./inventory
+remote_user = ubuntu
+private_key_file = ~/.ssh/otus_devops
+host_key_checking = False
+retry_files_enabled = False
+```
+
+Теперь можно упростить инвентори файл:
+```ini
+appserver ansible_host=app_ip
+dbserver ansible_host=db_ip
+```
+
+После создания конфигурационного файла формат ansible команд будет следующий:
+```editorconfig
+$ ansible dbserver -m command -a uptime
+dbserver | CHANGED | rc=0 >>
+ 12:14:47 up  3:13,  1 user,  load average: 0.04, 0.02, 0.00
+```
+
+* Определить группы хостов
+
+Управлять при помощи Ansible отдельными хостами становится
+неудобно, когда этих хостов становится более одного.
+В инвентори файле можно определить группу хостов для управления
+конфигурацией сразу нескольких хостов.
+Список хостов указывается под названием группы, каждый новый хост
+указывается в новой строке.
+
+```ini
+[app] # ⬅ Это название группы
+appserver ansible_host=host_ip # ⬅ Cписок хостов в данной группе
+
+[db]
+dbserver ansible_host=db_ip
+```
+
+Проверка:
+```editorconfig
+$ ansible app -m ping
+appserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+```
+
+* Использовать yaml инвентори
+```yaml
+app:
+  hosts:
+    appserver:
+      ansible_host: app_ip
+db:
+  hosts:
+    dbserver:
+      ansible_host: db_ip
+```
+
+Проверка:
+```editorconfig
+$ ansible all -i ./inventory.yml -m ping
+appserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+dbserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+```
+
+* Выполнить команды для проверки наличия библиотек на хостах
+
+Проверка `ruby`
+```editorconfig
+$ ansible app -m command -a 'ruby -v'
+appserver | CHANGED | rc=0 >>
+ruby 2.3.1p112 (2016-04-26) [x86_64-linux-gnu]
+```
+
+Проверка `mongod`
+```editorconfig
+$ ansible db -m command -a 'systemctl status mongod'
+dbserver | CHANGED | rc=0 >>
+* mongod.service - MongoDB Database Server
+   Loaded: loaded (/lib/systemd/system/mongod.service; enabled; vendor preset: enabled)
+   Active: active (running) since Tue 2021-07-27 09:01:25 UTC; 3h 23min ago
+     Docs: https://docs.mongodb.org/manual
+ Main PID: 651 (mongod)
+   CGroup: /system.slice/mongod.service
+           `-651 /usr/bin/mongod --config /etc/mongod.conf
+
+Jul 27 09:01:25 fhmlunq2u4pj4f378onl systemd[1]: Started MongoDB Database Server.
+```
+
+* Склонировать репозиторий используя anible
+```editorconfig
+$ ansible app -m git -a \
+ 'repo=https://github.com/express42/reddit.git dest=/home/ubuntu/reddit'
+appserver | CHANGED => {
+    "after": "5c217c565c1122c5343dc0514c116ae816c17ca2",
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "before": null,
+    "changed": true
+}
+```
+
+Повторный запуск покажет, что репозиторий уже склонирован и никаких изменений не произошло
+```editorconfig
+$ ansible app -m git -a \
+ 'repo=https://github.com/express42/reddit.git dest=/home/ubuntu/reddit'
+appserver | SUCCESS => {
+    "after": "5c217c565c1122c5343dc0514c116ae816c17ca2",
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "before": "5c217c565c1122c5343dc0514c116ae816c17ca2",
+    "changed": false,
+    "remote_url_changed": false
+}
+```
+
+#### Написать простой плейбук
+
+* Создать плейбук
+```yaml
+- name: Clone
+  hosts: app
+  tasks:
+    - name: Clone repo
+      git:
+        repo: https://github.com/express42/reddit.git
+        dest: /home/ubuntu/reddit
+```
+
+* Запустить плейбук
+
+Перед выполнением необходимо удалить склонированный репозиторий
+`ansible app -m command -a 'rm -rf ~/reddit'`
+
+```editorconfig
+ansible-playbook clone.yml
+
+PLAY [Clone] ***********************************************************************************************************************************************************************************************************
+
+TASK [Gathering Facts] *************************************************************************************************************************************************************************************************
+ok: [appserver]
+
+TASK [Clone repo] ******************************************************************************************************************************************************************************************************
+changed: [appserver]
+
+PLAY RECAP *************************************************************************************************************************************************************************************************************
+appserver                  : ok=2    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+```
 
 </details>
