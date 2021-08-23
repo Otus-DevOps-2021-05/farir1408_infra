@@ -1442,3 +1442,440 @@ appserver                  : ok=2    changed=1    unreachable=0    failed=0    s
 ```
 
 </details>
+
+## HW-09 (Lecture 11)
+#### branch: `ansible-2`
+- [X] Один плейбук, один сценарий
+- [X] Настроить инстанс приложения
+- [X] Один плейбук, несколько сценариев
+- [X] Несколько плейбуков
+- [X] Изменить провижининг в Packer
+
+<details><summary>Решение</summary>
+
+#### Один плейбук, один сценарий
+
+* Создать плейбук
+
+Плейбук может состоять из одного или нескольких сценариев (plays). Сценарий позволяет группировать набор заданий (tasks), который
+Ansible должен выполнить на конкретном хосте (или группе).
+
+Сценарий для mongodb:
+```yaml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+```
+
+Скопировать параметризированный локальный конфиг файл MongoDB на удаленный
+хост по указанному
+```yaml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+    - name: Change mongo config file
+      become: true # <-- Выполнить задание от root
+      template:
+        src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+        dest: /etc/mongod.conf # <-- Путь на удаленном хосте
+        mode: 0644 # <-- Права на файл, которые нужно установить
+```
+
+Для возможности запуска отдельных тасок, а не всего сценария, определить для каждой таски тег
+```yaml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+    - name: Change mongo config file
+      become: true # <-- Выполнить задание от root
+      template:
+        src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+        dest: /etc/mongod.conf # <-- Путь на удаленном хосте
+        mode: 0644 # <-- Права на файл, которые нужно установить
+      tags: db-tag # <-- Список тэгов для задачи
+```
+
+Создать параметризованный конфиг для mongodb
+```gotemplate
+# Where and how to store data.
+storage:
+  dbPath: /var/lib/mongodb
+  journal:
+    enabled: true
+
+# where to write logging data.
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+
+# network interfaces
+net:
+  port: {{ mongo_port | default('27017') }}
+  bindIp: {{ mongo_bind_ip }}
+```
+
+Пробный (dry-run) прогон плейбука
+```editorconfig
+$ ansible-playbook reddit_app.yml --check --limit db
+```
+
+В результате получим ошибку `{"changed": false, "msg": "AnsibleUndefinedVariable: 'mongo_bind_ip' is undefined"}`
+Не определена переменная, которая используется в шаблоне.
+
+Для исправления ошибки необходимо добавить блок vars в плейбук:
+```yaml
+vars:
+  mongo_bind_ip: 0.0.0.0 # <-- Переменная задается в блоке vars
+```
+
+После пробного запуска получен следующий результат:
+```editorconfig
+ok=2    changed=1
+```
+
+* Добавить handlers
+
+Handlers запускаются только по оповещению от других задач.
+Таск шлет оповещение handler-у в случае, когда он меняет свое
+состояние. По этой причине handlers удобно использовать для перезапуска сервисов.
+
+В плейбуке описать секцию с handler:
+```yaml
+handlers: # <-- Добавим блок handlers и задачу
+- name: restart mongod
+  become: true
+  service: name=mongod state=restarted
+```
+
+После запуска плейбука будет виден запуск handler:
+```editorconfig
+RUNNING HANDLER [restart mongod]
+```
+
+#### Настроить инстанс приложения
+
+* Создать unit файл для приложения:
+```editorconfig
+[Unit]
+Description=Puma HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/home/appuser/db_config
+User=appuser
+WorkingDirectory=/home/appuser/reddit
+ExecStart=/bin/bash -lc 'puma'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+* Создать таск и handler для копирования unit файла и запуска puma:
+```yaml
+tasks:
+  - name: Add unit file for Puma
+    become: true
+    copy:
+      src: files/puma.service
+      dest: /etc/systemd/system/puma.service
+    tags: app-tag
+    notify: reload puma
+handlers: # <-- Добавим блок handlers и задачу
+  - name: enable puma
+    become: true
+    systemd: name=puma enabled=yes
+    tags: app-tag
+```
+
+Что бы приложение знало по какому адресу обращаться к бд, вынести адрес в переменные окружения:
+`EnvironmentFile=/home/appuser/db_config`
+
+* Создать шаблон для приложения:
+```editorconfig
+DATABASE_URL={{ db_host }}
+```
+
+* Создать таск для копирования файла шаблона:
+```yaml
+- name: Add config for DB connection
+  template:
+    src: templates/db_config.j2
+    dest: /home/appuser/db_config
+  tags: app-tag
+```
+
+* Добавить переменную в плейбук:
+```yaml
+db_host: 10.128.0.23
+```
+
+После запуска плейбука результат будет следующий: `ok=4    changed=3`
+
+* Деплой приложения
+
+* Добавить таски на деплой кода и установку зависимостей
+```yaml
+- name: Fetch the latest version of application code
+  git:
+    repo: 'https://github.com/express42/reddit.git'
+    dest: /home/ubuntu/reddit
+    version: monolith # <-- Указываем нужную ветку
+  tags: deploy-tag
+  notify: reload puma
+- name: Bundle install
+  bundler:
+    state: present
+    chdir: /home/ubuntu/reddit # <-- В какой директории выполнить команду bundle
+  tags: deploy-tag
+```
+
+* Выполнить деплой `ansible-playbook reddit_app.yml --limit app --tags deploy-tag`
+```editorconfig
+ok=3    changed=3
+```
+
+#### Один плейбук, несколько сценариев
+
+В предыдущей части был создан один плейбук, в котором определён один сценарий (play) и для запуска нужных тасков на заданной
+группе хостов необходима была опция --limit для указания группы хостов и --tags для указания нужных тасков.
+Проблема такого подхода состоит в том, что необходимо помнить при каждом запуске плейбука, на каком хосте какие таски
+необходимо применить, и передавать это в опциях командной строки.
+
+* Сценарий для mongodb
+```yaml
+---
+- name: Configure mongodb
+  hosts: db
+  tags: db-tag
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+  tasks:
+    - name: Change mongo config file
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      notify: restart mongod
+
+  handlers:
+    - name: restart mongod
+      service: name=mongod state=restarted
+```
+
+* Сценарий для app
+```yaml
+- name: Configure application hosts
+  hosts: app
+  tags: app-tag
+  become: true
+  vars:
+    db_host: 10.132.0.2
+  tasks:
+    - name: Add unit file for Puma
+      copy:
+        src: files/puma.service
+        dest: /etc/systemd/system/puma.service
+      notify: reload puma
+
+    - name: Add config for DB connection
+      template:
+        src: templates/db_config.j2
+        dest: /home/ubuntu/db_config
+        owner: ubuntu
+        group: ubuntu
+
+    - name: enable puma
+      systemd: name=puma enabled=yes
+
+  handlers:
+    - name: reload puma
+      systemd: name=puma state=restarted
+```
+
+* Сценарий для деплоя приложения
+```yaml
+- name: Deploy application
+  hosts: app
+  tags: deploy-tag
+  tasks:
+    - name: Fetch the latest version of application code
+      git:
+        repo: 'https://github.com/express42/reddit.git'
+        dest: /home/ubuntu/reddit
+        version: monolith # <-- Указываем нужную ветку
+      notify: restart puma
+    - name: Bundle install
+      bundler:
+        state: present
+        chdir: /home/ubuntu/reddit # <-- В какой директории выполнить команду bundle
+
+  handlers:
+    - name: restart puma
+      become: true
+      sysctl: name=puma state=restarted
+```
+
+#### Несколько плейбуков
+
+Один плейбук - несколько сценариев решает проблему конфигурирования через теги, но с ростом числа управляемых сервисов, будет расти количество
+различных сценариев и, как результат, увеличится объем плейбука.
+
+* Несколько плейбуков
+
+* Содержимое плейбука db
+```yaml
+---
+- name: Configure mongodb
+  hosts: db
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+  tasks:
+    - name: Change mongo config file
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      notify: restart mongod
+
+  handlers:
+    - name: restart mongod
+      service: name=mongod state=restarted
+```
+
+* Содержимое плейбука app
+```yaml
+---
+- name: Configure application hosts
+  hosts: app
+  become: true
+  vars:
+    db_host: 10.128.0.15
+  tasks:
+    - name: Add unit file for Puma
+      copy:
+        src: files/puma.service
+        dest: /etc/systemd/system/puma.service
+      notify: reload puma
+
+    - name: Add config for DB connection
+      template:
+        src: templates/db_config.j2
+        dest: /home/ubuntu/db_config
+        owner: ubuntu
+        group: ubuntu
+
+    - name: enable puma
+      systemd: name=puma enabled=yes
+
+  handlers:
+    - name: reload puma
+      systemd: name=puma state=restarted
+```
+
+* Содержимое плейбука deploy
+```yaml
+---
+- name: Deploy application
+  hosts: app
+  tasks:
+    - name: Fetch the latest version of application code
+      git:
+        repo: 'https://github.com/express42/reddit.git'
+        dest: /home/ubuntu/reddit
+        version: monolith # <-- Указываем нужную ветку
+      notify: restart puma
+    - name: Bundle install
+      bundler:
+        state: present
+        chdir: /home/ubuntu/reddit # <-- В какой директории выполнить команду bundle
+
+  handlers:
+    - name: restart puma
+      become: true
+      sysctl: name=puma state=restarted
+```
+
+* Содержимое site.yml, в котором содержится конфигурация всей инфраструктуры
+```yaml
+---
+- import_playbook: db.yml
+- import_playbook: app.yml
+- import_playbook: deploy.yml
+```
+
+#### Изменить провижининг в Packer
+
+* Создать плейбуки для установки ПО, необходимого в образах
+
+* Содержимое файла `packer_app.yml`
+```yaml
+---
+- name: Install ruby
+  hosts: all
+  become: true
+  tasks:
+  - name: Install ruby and other packages
+    apt:
+      name: "{{ item }}"
+      state: present
+      update_cache: true
+    loop:
+    - ruby-full
+    - ruby-bundler
+    - build-essential
+    - git
+```
+
+* Содержимое файла `packer_db.yml`
+```yaml
+---
+- name: Install and run mongodb
+  hosts: all
+  become: true
+  tasks:
+    # Добавим ключ репозитория для последующей работы с ним
+    - name: Add APT key
+      apt_key:
+        url: https://www.mongodb.org/static/pgp/server-4.2.asc
+        state: present
+
+    - name: Add repository
+      apt_repository:
+        repo: 'deb [ arch=amd64,arm64 ] http://repo.mongodb.org/apt/ubuntu xenial/mongodb-org/4.2 multiverse'
+        state: present
+
+    - name: Install packages
+      apt:
+        name: mongodb-org
+        state: present
+        update_cache: true
+
+    - name: Configure service supervisor
+      systemd:
+        name: mongod
+        enabled: yes
+```
+
+* Интегрировать ansible и packer заменив провиженеры
+```json
+{
+  "type": "ansible",
+  "playbook_file": "ansible/packer_app.yml"
+}
+...
+{
+  "type": "ansible",
+  "playbook_file": "ansible/packer_db.yml"
+}
+```
+
+
+</details>
