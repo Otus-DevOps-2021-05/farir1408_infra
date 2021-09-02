@@ -14,9 +14,6 @@ variable "public_key_path" {
 variable "private_key_path" {
   description = "Path to the private key used for ssh access"
 }
-variable "image_id" {
-  description = "Image"
-}
 variable "subnet_id" {
   description = "Subnet"
 }
@@ -30,4 +27,10 @@ variable "app_disc_image" {
 variable "db_disc_image" {
   description = "Disk image for reddit db"
   default     = "mongodb-base"
+}
+variable "s3_access_key" {
+  description = "Object storage access key"
+}
+variable "s3_secret_key" {
+  description = "Object storage secret key"
 }

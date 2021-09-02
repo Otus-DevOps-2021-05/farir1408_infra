@@ -8,7 +8,7 @@
     - name: Change mongo config file
       become: true # <-- Выполнить задание от root
       template:
-        src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+        src: ../old/templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
         dest: /etc/mongod.conf # <-- Путь на удаленном хосте
         mode: 0644 # <-- Права на файл, которые нужно установить
       tags: db-tag # <-- Список тэгов для задачи
@@ -22,13 +22,13 @@
     - name: Add unit file for Puma
       become: true
       copy:
-        src: files/puma.service
+        src: ../old/files/puma.service
         dest: /etc/systemd/system/puma.service
       tags: app-tag
       notify: reload puma
     - name: Add config for DB connection
       template:
-        src: templates/db_config.j2
+        src: ../old/templates/db_config.j2
         dest: /home/ubuntu/db_config
       tags: app-tag
 
