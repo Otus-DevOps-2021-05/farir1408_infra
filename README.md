@@ -1877,5 +1877,388 @@ ok=3    changed=3
 }
 ```
 
+</details>
+
+## HW-10 (Lecture 12)
+#### branch: `ansible-3`
+- [X] Перенести плейбуки в раздельные роли
+- [X] Описать два окружения
+- [X] Использовать коммьюнити роль nginx
+- [X] Использовать Ansible Vault для окружений
+
+<details><summary>Решение</summary>
+
+#### Перенести плейбуки в раздельные роли
+
+В текущей реализации есть несколько существенных проблем, одна из которы состоит в том, что текущую
+конфигурацию сложно версионировать и тяжело подстраивать для различных окружений.
+Так же плейбуки не подходят как формат для распространения и переиспользования кода (нет версии, зависимостей и метаданных,
+зато много хардкода)
+
+Решить эти проблемы может использование ролей
+Роли представляют собой основной механизм группировки и переиспользования конфигурационного кода в Ansible.
+Роли позволяют сгруппировать в единое целое описание конфигурации отдельных сервисов и компонент системы (таски,
+хендлеры, файлы, шаблоны, переменные).
+Роли можно затем переиспользовать при настройке окружений, тем самым избежав дублирования кода.
+Ролями можно также делиться и брать у сообщества (community) в [Ansible Galaxy](https://galaxy.ansible.com/)
+Справка по использованию ansible galaxy: `ansible-galaxy -h`
+
+* Ansible-galaxy помогает сформировать правильную структуру для роли
+```editorconfig
+ansible-galaxy init <role_name>
+```
+
+После выполнения команды `ansible-galaxy init app` будет создана роль app со следующей структурой:
+```editorconfig
+app
+├── README.md
+├── defaults        # <-- Директория для переменных по умолчанию
+│   └── main.yml
+├── files
+├── handlers
+│   └── main.yml
+├── meta            # <-- Информация о роли, создателе и зависимостях
+│   └── main.yml
+├── tasks           # <-- Директория для тасков
+│   └── main.yml
+├── templates
+├── tests
+│   ├── inventory
+│   └── test.yml
+└── vars            # <-- Директория для переменных, которые не должны
+    └── main.yml    # переопределяться пользователем
+```
+
+* Создать роль для базы данных db
+
+Описание таски:
+```yaml
+---
+# tasks file for db
+- name: Change mongo config file
+  template:
+    src: mongod.conf.j2
+    dest: /etc/mongod.conf
+    mode: 0644
+  notify: restart mongod
+```
+
+Шаблон конфигурации mongodb
+```editorconfig
+# Where and how to store data.
+storage:
+  dbPath: /var/lib/mongodb
+  journal:
+    enabled: true
+
+# where to write logging data.
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+
+# network interfaces
+net:
+  port: {{ mongo_port | default('27017') }}
+  bindIp: {{ mongo_bind_ip }}
+```
+
+Особенностью ролей также является, что модули template и copy, которые используются в тасках роли, будут по умолчанию
+проверять наличие шаблонов и файлов в директориях роли templates и files соответственно.
+
+Определение хендлера:
+```yaml
+---
+# handlers file for db
+- name: restart mongod
+  service: name=mongod state=restarted
+```
+
+Определение переменных со значениями по умолчанию:
+```yaml
+---
+# defaults file for db
+mongo_port: 27017
+mongo_bind_ip: 127.0.0.1
+```
+
+* Создать роль для приложения app
+
+Описание таски:
+```yaml
+---
+# tasks file for app
+- name: Add unit file for Puma
+  copy:
+    src: puma.service
+    dest: /etc/systemd/system/puma.service
+  notify: reload puma
+
+- name: Add config for DB connection
+  template:
+    src: db_config.j2
+    dest: /home/ubuntu/db_config
+    owner: ubuntu
+    group: ubuntu
+
+- name: enable puma
+  systemd: name=puma enabled=yes
+```
+
+Шаблон конфигурации сервиса
+```editorconfig
+DATABASE_URL={{ db_host }}
+```
+
+Файл с init скриптом для запуска сервиса
+```editorconfig
+[Unit]
+Description=Puma HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/home/ubuntu/db_config
+User=ubuntu
+WorkingDirectory=/home/ubuntu/reddit
+ExecStart=/bin/bash -lc 'puma'
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Определение хендлера:
+```yaml
+---
+# handlers file for app
+- name: reload puma
+  systemd: name=puma state=restarted
+```
+
+Определение переменных со значениями по умолчанию:
+```yaml
+---
+# defaults file for app
+db_host: 127.0.01
+```
+
+* Вызов ролей
+
+Вызов роли в плейбуке для настройки базы данных
+```yaml
+---
+- name: Configure mongodb
+  hosts: db
+  become: true
+
+  vars:
+    mongo_bind_ip: 0.0.0.0
+
+  roles:
+    - db
+```
+
+Вызов роли в плейбуке для настройки приложения
+```yaml
+---
+- name: Configure application hosts
+  hosts: app
+  become: true
+
+  vars:
+    db_host: 10.128.0.14
+
+  roles:
+    - app
+```
+
+* Пересоздать инфраструктуру и применить плейбук
+```editorconfig
+$ ansible-playbook site.yml
+```
+
+#### Описать два окружения
+
+* Создать под каждое окружение директорию и создать внутри инвентори файл для окружения
+
+Теперь для выполнения плейбука необходимо явно передавать инвентори файл
+```editorconfig
+$ ansible-playbook -i environments/prod/inventory deploy.yml
+```
+
+Для определения окружения по-умолчанию необходимо добавить его в конфиг ansible
+```editorconfig
+[defaults]
+inventory = ./environments/stage/inventory # Inventory по-умолчанию задается здесь
+remote_user = ubuntu
+private_key_file = ~/.ssh/otus_devops
+host_key_checking = False
+retry_files_enabled = False
+```
+
+* Задать переменные групп хостов
+
+Параметризация конфигурации ролей за счет переменных дает возможность изменять настройки конфигурации, задавая
+нужные значения переменных.
+Ansible позволяет задавать переменные для групп хостов, определенных в инвентори файле.
+Директория group_vars, созданная в директории плейбука или инвентори файла, позволяет создавать файлы (имена, которых
+должны соответствовать названиям групп в инвентори файле) для определения переменных для группы хостов.
+
+* Конфигурация stage
+
+Определить файл group_vars/app, с переменными для группы хостов `app` из инвентори файла
+```editorconfig
+db_host: 10.128.0.19
+```
+
+Определить файл group_vars/db, с переменными для группы хостов `db` из инвентори файла
+```editorconfig
+mongo_bind_ip: 0.0.0.0
+```
+
+Определить файл group_vars/all, с пременными, которые будут доступны всем хостам окружения
+```editorconfig
+env: stage
+```
+
+* Конфигурация prod
+
+Конфигурация аналогична stage
+
+* Вывода информации об окружении
+
+Определить переменную `env` в используемых ролях
+```editorconfig
+env: local
+```
+
+Для вывода информации об окружении необходимо добавить таск, используя модуль debug
+```yaml
+- name: Show info about the env this host belongs to
+  debug:
+    msg: "This host is in {{ env }} environment!!!"
+```
+
+* Организовать плейбукисогласно best practices
+
+* Улучшить файл ansible.cfg
+
+Содержимое файла `ansible.cfg`
+```editorconfig
+[defaults]
+inventory = ./environments/stage/inventory # Inventory по-умолчанию задается здесь
+remote_user = ubuntu
+private_key_file = ~/.ssh/otus_devops
+# Отключим проверку SSH Host-keys (поскольку они всегда разные для новых инстансов)
+host_key_checking = False
+# Отключим создание *.retry-файлов (они нечасто нужны, но мешаются под руками)
+retry_files_enabled = False
+# Явно укажем расположение ролей (можно задать несколько путей через ; )
+roles_path = ./roles
+
+[diff]
+# Включим обязательный вывод diff при наличии изменений и вывод 5 строк контекста
+always = True
+context = 5
+```
+
+#### Использовать коммьюнити роль nginx
+
+* Настроить обратное проксирование для приложения через nginx, используя роль [jdauphant.nginx](https://github.com/jdauphant/ansible-role-nginx)
+
+Хорошей практикой является разделение зависимостей по окружениям.
+Создать файл зависимостей `requirements.yml` для каждого окружения
+```yaml
+- src: jdauphant.nginx
+  version: v2.21.1
+```
+
+Установить роль
+```editorconfig
+ansible-galaxy install -r environments/stage/requirements.yml
+```
+
+Для настройки nginx роли необходимо добавить переменные по умолчанию в группе app:
+```editorconfig
+---
+db_host: 10.128.0.21
+nginx_sites:
+  default:
+    - listen 80
+    - server_name "reddit"
+    - location / {
+        proxy_pass http://127.0.0.1:9292;
+      }
+```
+
+#### Использовать Ansible Vault для окружений
+
+Для безопасной работы с приватными данными (пароли, приватные ключи и т.д.) используется механизм [Ansible Vault](https://docs.ansible.com/ansible/devel/user_guide/vault.html)
+Данные сохраняются в зашифрованных файлах, которые при выполнении плейбука автоматически расшифровываются.
+Таким образом, приватные данные можно хранить в системе контроля версий.
+
+* Создать файл `vault.key` с паролем для шифрования
+
+* Добавить опцию в `ansible.cfg`
+```editorconfig
+[defaults]
+...
+vault_password_file = vault.key
+```
+
+* Добавить плейбук для создания пользователей
+```yaml
+---
+- name: Create users
+  hosts: all
+  become: true
+
+  vars_files:
+    - "{{ inventory_dir }}/credentials.yml"
+
+  tasks:
+    - name: create users
+      user:
+        name: "{{ item.key }}"
+        password: "{{ item.value.password|password_hash('sha512', 65534|random(seed=inventory_hostname)|string) }}"
+        groups: "{{ item.value.groups | default(omit) }}"
+      with_dict: "{{ credentials.users }}"
+```
+
+* Создать файл со списком пользователей для каждого окружения `credentials.yml`
+```yaml
+ansible/environments/prod/credentials.yml
+
+---
+credentials:
+  users:
+    admin:
+      password: admin123
+      groups: sudo
+```
+```yaml
+ansible/environments/stage/credentials.yml
+
+---
+credentials:
+  users:
+    admin:
+      password: qwerty123
+      groups: sudo
+    qauser:
+      password: test123
+```
+
+* Зашифровать файлы пользователей
+```editorconfig
+$ ansible-vault encrypt environments/prod/credentials.yml
+```
+
+Для расшифровки файла используется команда `decrypt`
+```editorconfig
+$ ansible-vault decrypt environments/prod/credentials.yml
+```
+
+Для изменения пременных используется команда `edit`
 
 </details>

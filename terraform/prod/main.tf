@@ -30,8 +30,8 @@ module "db" {
 }
 
 resource "yandex_storage_bucket" "terraform" {
-  access_key = "access-key"
-  secret_key = "secret-key"
+  access_key    = var.s3_access_key
+  secret_key    = var.s3_secret_key
   bucket = "terraform-hw"
   force_destroy = true
 }

@@ -1,9 +1,12 @@
 variables.json
+vault.key
 *.tfstate
 *.tfstate.*.backup
 *.tfstate.backup
 *.tfvars
 *.lock.hcl
 *.retry
+.travis.yml
+jdauphant.nginx
 .terraform/
 .idea/
