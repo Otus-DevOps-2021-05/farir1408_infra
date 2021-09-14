@@ -2262,3 +2262,531 @@ $ ansible-vault decrypt environments/prod/credentials.yml
 Для изменения пременных используется команда `edit`
 
 </details>
+
+## HW-11 (Lecture 13)
+#### branch: `ansible-4`
+- [X] Доработать роли для провижининга в Vagrant
+- [X] Дополнительное задание: Настроить nginx используя Vagrantfile
+- [X] Протестировать роли с помощью Molecule и Testinfra
+- [X] Переключить сбор образов packer на использование ролей
+- [ ] Дополнительное задание: Переключить Github Actions на автоматический прогон тестов
+
+<details><summary>Решение</summary>
+
+#### Доработать роли для провижининга в Vagrant
+
+* Установить [Virtual box](virtualbox.org/wiki/Downloads)
+
+* Установить [Vagrant](https://www.vagrantup.com/downloads)
+
+* Создать Vagrantfile с определением двух виртуальных машин
+```editorconfig
+Vagrant.configure("2") do |config|
+
+  config.vm.provider :virtualbox do |v|
+    v.memory = 512
+  end
+
+  config.vm.define "dbserver" do |db|
+    db.vm.box = "ubuntu/xenial64"
+    db.vm.hostname = "dbserver"
+    db.vm.network :private_network, ip: "10.10.10.10"
+  end
+
+  config.vm.define "appserver" do |app|
+    app.vm.box = "ubuntu/xenial64"
+    app.vm.hostname = "appserver"
+    app.vm.network :private_network, ip: "10.10.10.20"
+  end
+end
+```
+
+* Для создания виртуальных машин необходимо выполнить команду `vagrant up`
+
+Если указанного бокса (образа VM) нет на локальной машине, то Vagrant попытается его скачать с Vagrant Cloud - главного хранилища
+Vagrant боксов, откуда Vagrant скачивает образы по умолчанию.
+
+* Проверить что бокс скачался на локальную машину
+```editorconfig
+$ vagrant box list
+ubuntu/xenial64 (virtualbox, 20210804.0.0)
+```
+
+* Проверить статус виртуальных машин
+```editorconfig
+$ vagrant status
+Current machine states:
+
+dbserver                  running (virtualbox)
+appserver                 running (virtualbox)
+```
+
+* Проверить ssh доступ к хосту appserver
+```editorconfig
+$ vagrant ssh appserver
+```
+
+* Проверить сетевую доступность БД из хоста appserver
+```editorconfig
+vagrant@appserver:~$ ping -c 2 10.10.10.10
+PING 10.10.10.10 (10.10.10.10) 56(84) bytes of data.
+64 bytes from 10.10.10.10: icmp_seq=1 ttl=64 time=0.659 ms
+64 bytes from 10.10.10.10: icmp_seq=2 ttl=64 time=0.450 ms
+
+--- 10.10.10.10 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1159ms
+rtt min/avg/max/mdev = 0.450/0.554/0.659/0.107 ms
+```
+
+* Доработать роли для провижининга в Vagrant
+
+Vagrant поддерживает большое количество [провижинеров](https://www.vagrantup.com/docs/provisioning), которые позволяют
+автоматизировать процесс конфигурации созданных VMs с использованием популярных
+инструментов управления конфигурацией и обычных скриптов на bash.
+
+* Добавить Ansible провижинер для `dbserver`
+```editorconfig
+db.vm.provision "ansible" do |ansible|
+  ansible.playbook = "playbooks/site.yml"
+  ansible.groups = {
+  "db" => ["dbserver"],
+  "db:vars" => {"mongo_bind_ip" => "0.0.0.0"}
+  }
+ end
+```
+
+* Запуск провижинера для уже запущенной виртуальной машины
+```editorconfig
+$ vagrant provision dbserver
+```
+
+* Установить python на каждый хост используя модуль raw
+```yaml
+---
+- name: Check && install python
+  hosts: all
+  become: true
+  gather_facts: False
+
+  tasks:
+    - name: Install python for Ansible
+      raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+      changed_when: False
+```
+
+* Доработка роли db для установки и запуска mongodb
+
+Добавить таски для установки mongodb в роль db
+```yaml
+---
+# Добавим ключ репозитория для последующей работы с ним
+- name: Add APT key
+  apt_key:
+    url: https://www.mongodb.org/static/pgp/server-4.2.asc
+    state: present
+  tags: install
+
+- name: Add repository
+  apt_repository:
+    repo: 'deb [ arch=amd64,arm64 ] http://repo.mongodb.org/apt/ubuntu xenial/mongodb-org/4.2 multiverse'
+    state: present
+  tags: install
+
+- name: Install packages
+  apt:
+    name: mongodb-org
+    state: present
+    update_cache: true
+  tags: install
+
+- name: Configure service supervisor
+  systemd:
+    name: mongod
+    enabled: yes
+  tags: install
+```
+
+* Вынести конфигурацию mongodb в отдульный таск
+```yaml
+---
+- name: Change mongo config file
+  template:
+    src: templates/mongod.conf.j2
+    dest: /etc/mongod.conf
+    mode: 0644
+  notify: restart mongod
+```
+
+* В файле main.yml роли db таски необходимо вызывать в нужном порядке
+```yaml
+---
+# tasks file for db
+
+- name: Show info about the env this host belongs to
+  debug:
+    msg: "This host is in {{ env }} environment!!!"
+
+- include: install_mongo.yml
+- include: config_mongo.yml
+```
+
+* Выполнить провиженинг
+```editorconfig
+$ vagrant provision dbserver
+```
+
+* Проверить доступность порта `mongodb` для хоста `appserver`
+```editorconfig
+$ telnet 10.10.10.10 27017
+Trying 10.10.10.10...
+Connected to 10.10.10.10.
+Escape character is '^]'.
+```
+
+* Доработка роли app
+
+* Добавить в роль таск с установкой ruby
+```yaml
+---
+- name: Install ruby and other packages
+  apt:
+    name: "{{ item }}"
+    state: present
+    update_cache: true
+  loop:
+    - ruby-full
+    - ruby-bundler
+    - build-essential
+    - git
+  tags: ruby
+```
+
+* Добавить таск с настройкой puma сервера и запуском приложения
+```yaml
+---
+- name: Add unit file for Puma
+  copy:
+    src: puma.service
+    dest: /etc/systemd/system/puma.service
+  notify: reload puma
+
+- name: Add config for DB connection
+  template:
+    src: db_config.j2
+    dest: /home/ubuntu/db_config
+    owner: ubuntu
+    group: ubuntu
+
+- name: enable puma
+  systemd: name=puma enabled=yes
+```
+
+* Изменить файл main.yml роли app для вызова задач в определённом порядке
+```yaml
+---
+# tasks file for app
+
+- name: Show info about the env this host belongs to
+  debug:
+    msg: "This host is in {{ env }} environment!!!"
+
+- include: ruby.yml
+- include: puma.yml
+```
+
+* Определить провиженер для виртуальной машины `appserver` в Vagrantfile
+```editorconfig
+app.vm.provision "ansible" do |ansible|
+  ansible.playbook = "playbooks/site.yml"
+  ansible.groups = {
+  "app" => ["appserver"],
+  "app:vars" => { "db_host" => "10.10.10.10"}
+  }
+end
+```
+
+* Что с инвентори?
+
+Vagrant динамически генерирует инвентори файл для провижининга в соответствии с конфигурацией в
+Vagrantfile, секция `ansible.groups`.
+То есть передавая опции выше, будет создаваться группа [app], в которой будет один хост appserver (что соответсвует
+создаваемой VM). Далее определяются переменные для данной группы app.
+
+* Проверка инвентори
+
+Для получения сгенерированного инвентори файла необходимо выполнить команду
+```editorconfig
+& cat .vagrant/provisioners/ansible/inventory/vagrant_ansible_inventory
+
+# Generated by Vagrant
+dbserver ansible_host=127.0.0.1 ansible_port=2222 ...'
+
+[db]
+dbserver
+
+[db:vars]
+mongo_bind_ip=0.0.0.0
+```
+
+* Провиженинг роли `appserver`
+```editorconfig
+$ vagrant provision appserver
+```
+
+* Параметризация роли
+
+Изменить таск с копированием unit файла с настройкой puma
+```yaml
+- name: Add unit file for Puma
+  template:
+    src: puma.service.j2
+    dest: /etc/systemd/system/puma.service
+  notify: reload puma
+```
+
+Изменить unit файл для работы с переменной `deploy_user`
+```unit file (systemd)
+[Unit]
+Description=Puma HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/home/{{ deploy_user }}/db_config
+User={{ deploy_user }}
+WorkingDirectory=/home/{{ deploy_user }}/reddit
+ExecStart=/bin/bash -lc 'puma'
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Параметризовать таск с копированием конфигурации для БД
+```yaml
+- name: Add config for DB connection
+  template:
+    src: db_config.j2
+    dest: /home/{{ deploy_user }}/db_config
+    owner: {{ deploy_user }}
+    group: {{ deploy_user }}
+```
+
+Параметризировать таск deploy.yml
+```yaml
+---
+- name: Deploy application
+  hosts: app
+  tasks:
+    - name: Fetch the latest version of application code
+      git:
+        repo: 'https://github.com/express42/reddit.git'
+        dest: /home/{{ deploy_user }}/reddit
+        version: monolith # <-- Указываем нужную ветку
+      notify: restart puma
+    - name: Bundle install
+      bundler:
+        state: present
+        chdir: /home/{{ deploy_user }}/reddit # <-- В какой директории выполнить команду bundle
+
+  handlers:
+    - name: restart puma
+      become: true
+      systemd: name=puma state=restarted
+```
+
+* Определить переменную для указания пользователя
+
+Добавить extra_vars переменные в блок определения провижинера в Vagrantfile,
+так как extra_vars имеет наивысший приоритет.
+```yaml
+app.vm.provision "ansible" do |ansible|
+  ansible.playbook = "playbooks/site.yml"
+  ansible.groups = {
+  "app" => ["appserver"],
+  "app:vars" => { "db_host" => "10.10.10.10"}
+  }
+  ansible.extra_vars = {
+    "deploy_user" => "vagrant"
+  }
+end
+```
+
+* Проверка выполнения
+```editorconfig
+$ vagrant provision appserver
+```
+
+#### Дополнительное задание: Настроить nginx используя Vagrantfile
+
+Добавить в провиженер appserver переменную для конфига nginx
+```yaml
+app.vm.provision "ansible" do |ansible|
+  ansible.playbook = "playbooks/site.yml"
+  ansible.groups = {
+  "app" => ["appserver"],
+  "app:vars" => { "db_host" => "10.10.10.10" }
+  }
+  ansible.extra_vars = {
+    "deploy_user" => "vagrant",
+    nginx_sites: {
+      default: ["listen 80", "server_name 'reddit'", "location / {proxy_pass http://127.0.0.1:9292;}"]
+    }
+  }
+end
+```
+
+#### Протестировать роли с помощью Molecule и Testinfra
+
+Для локального тестирования Ansible ролей используется Molecule для создания машин и проверки
+конфигурации и Testinfra для написания тестов.
+
+* Установка зависимостей
+
+В `requiremets.txt` прописать следующие зависимости
+```editorconfig
+ansible>=2.4
+molecule==2.22
+testinfra>=1.10
+python-vagrant>=0.5.15
+```
+
+Установить зависимости используя `pip`
+```editorconfig
+$ pip install -r requiremets.txt
+```
+
+* Тестирование db роли
+
+Инициализировать сценарий для уже существующей роли db
+```editorconfig
+$ molecule init scenario -r db -d vagrant default
+```
+
+* Написать тесты для роли db, используя модуль testinfra
+```python
+import os
+
+import testinfra.utils.ansible_runner
+
+testinfra_hosts = testinfra.utils.ansible_runner.AnsibleRunner(
+    os.environ['MOLECULE_INVENTORY_FILE']).get_hosts('all')
+
+# check if MongoDB is enabled and running
+def test_mongo_running_and_enabled(host):
+    mongo = host.service("mongod")
+    assert mongo.is_running
+    assert mongo.is_enabled
+
+# check if configuration file contains the required line
+def test_config_file(host):
+    config_file = host.file('/etc/mongod.conf')
+    assert config_file.contains('bindIp: 0.0.0.0')
+    assert config_file.is_file
+```
+
+* Описать виртуальную машину для запуска molecule
+```yaml
+---
+dependency:
+  name: galaxy
+driver:
+  name: vagrant
+  provider:
+    name: virtualbox
+lint:
+  name: yamllint
+platforms:
+  - name: instance
+    box: ubuntu/xenial64
+provisioner:
+  name: ansible
+  lint:
+    name: ansible-lint
+verifier:
+  name: ansible
+```
+
+* Создать виртуальную машину для тестов molecule
+```editorconfig
+$ molecule create
+```
+
+* Проверить список созданных инстансов
+```editorconfig
+$ molecule list
+INFO     Running default > list
+╷             ╷                  ╷               ╷         ╷
+Instance Name │ Driver Name │ Provisioner Name │ Scenario Name │ Created │ Converged
+╶───────────────┼─────────────┼──────────────────┼───────────────┼─────────┼───────────╴
+instance      │ vagrant     │ ansible          │ default       │ true    │ false
+```
+
+Для отладки есть возможность подключиться к виртуальной машине по ssh
+```editorconfig
+$ molecule login -h instance
+```
+
+* Отредактировать плейбук запуска molecule тестов
+```yaml
+---
+- name: Converge
+  hosts: all
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+  tasks:
+    - name: "Include db"
+      include_role:
+        name: "db"
+```
+
+* Применить плейбук к созданому тестовому хосту
+```editorconfig
+$ molecule converge
+```
+
+* Запустить тесты
+```editorconfig
+molecule verify
+INFO     default scenario test matrix: verify
+INFO     Performing prerun...
+...
+
+molecule/default/tests/test_default.py ...                               [100%]
+
+============================== 3 passed in 2.26s ===============================
+INFO     Verifier completed successfully.
+```
+
+#### Переключить сбор образов packer на использование ролей
+
+* Переключить плейбуки для pakcer на работы с ansible ролями
+
+```yaml
+---
+- name: Install ruby
+  hosts: all
+  become: true
+
+  roles:
+    - app
+```
+
+```yaml
+---
+- name: Install and run mongodb
+  hosts: all
+  become: true
+
+  roles:
+    - db
+```
+
+* Сконфигурировать packer скрипт для корректного импорта ролей
+```yaml
+"user": "ubuntu",
+"extra_arguments": ["--tags","ruby"],
+"ansible_env_vars": ["ANSIBLE_ROLES_PATH={{ pwd }}/ansible/roles"]
+```
+
+</details>
