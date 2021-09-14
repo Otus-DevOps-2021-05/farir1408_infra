@@ -1,0 +1,26 @@
+---
+# Добавим ключ репозитория для последующей работы с ним
+- name: Add APT key
+  apt_key:
+    url: https://www.mongodb.org/static/pgp/server-4.2.asc
+    state: present
+  tags: install
+
+- name: Add repository
+  apt_repository:
+    repo: 'deb [ arch=amd64,arm64 ] http://repo.mongodb.org/apt/ubuntu xenial/mongodb-org/4.2 multiverse'
+    state: present
+  tags: install
+
+- name: Install packages
+  apt:
+    name: mongodb-org
+    state: present
+    update_cache: true
+  tags: install
+
+- name: Configure service supervisor
+  systemd:
+    name: mongod
+    enabled: yes
+  tags: install
